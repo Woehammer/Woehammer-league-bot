@@ -154,9 +154,7 @@ function leagueCachedFooter(embed) {
 }
 
 function isAdmin(interaction) {
-  return Boolean(
-    interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
-  );
+  return Boolean(interaction.memberPermissions?.has(PermissionFlagsBits.Administrator));
 }
 
 function uniq(arr) {
@@ -178,6 +176,8 @@ function getCol(row, candidates) {
 }
 
 // -------------------- CLEAN TABLE RENDERING (NO EMOJIS) --------------------
+// NOTE: Markdown bold does NOT work inside ``` code blocks.
+// We'll keep the aligned table in a code block, and put bold points in a "Top" line above it.
 function clampName(name, max = 20) {
   const s = String(name ?? "").trim();
   if (s.length <= max) return s;
@@ -196,18 +196,19 @@ function padL(s, n) {
 
 function renderStandingsBlock(rows) {
   const NAME_W = 22;
+  const REC_W = 5; // "W-D-L" like "3-0-2"
 
   const header =
-    `${padR("Player", NAME_W)} ${padL("P", 2)} ${padL("W", 2)} ${padL("D", 2)} ${padL("L", 2)} ${padL("Pts", 3)}`;
+    `${padR("Player", NAME_W)} ${padL("P", 2)} ${padR("W-D-L", REC_W)} ${padL("Pts", 3)}`;
   const rule = "-".repeat(header.length);
 
   const lines = rows.map((r) => {
     const name = clampName(r.player, NAME_W);
-    return `${padR(name, NAME_W)} ${padL(r.played, 2)} ${padL(r.w, 2)} ${padL(r.d, 2)} ${padL(r.l, 2)} ${padL(r.pts, 3)}`;
+    const rec = `${r.w}-${r.d}-${r.l}`;
+    return `${padR(name, NAME_W)} ${padL(r.played, 2)} ${padR(rec, REC_W)} ${padL(r.pts, 3)}`;
   });
 
   return ["```", header, rule, ...lines, "```"].join("\n");
-}
 }
 
 // -------------------- LEAGUE CACHE + FETCH --------------------
@@ -256,7 +257,7 @@ async function ensureLeaguePlayers() {
 // -------------------- LEAGUE CSV COLUMN HELPERS --------------------
 const lpPlayer = (r) => getCol(r, ["Player", "player", "Name", "name"]);
 const lpLeague = (r) => getCol(r, ["League", "league"]);
-const lpList   = (r) => getCol(r, ["Lists", "List", "lists", "list"]);
+const lpList = (r) => getCol(r, ["Lists", "List", "lists", "list"]);
 
 const lpOpponents = (r) => ([
   getCol(r, ["Rnd 1 Opponent", "Round 1 Opponent", "R1 Opponent"]),
@@ -267,10 +268,10 @@ const lpOpponents = (r) => ([
 ]);
 
 const lpGames = (r) => toNum(getCol(r, ["Games", "games", "Played"]));
-const lpW     = (r) => toNum(getCol(r, ["W", "w", "Wins"]));
-const lpD     = (r) => toNum(getCol(r, ["D", "d", "Draws"]));
-const lpL     = (r) => toNum(getCol(r, ["L", "l", "Losses"]));
-const lpPts   = (r) => toNum(getCol(r, ["Pts", "pts", "Points"]));
+const lpW = (r) => toNum(getCol(r, ["W", "w", "Wins"]));
+const lpD = (r) => toNum(getCol(r, ["D", "d", "Draws"]));
+const lpL = (r) => toNum(getCol(r, ["L", "l", "Losses"]));
+const lpPts = (r) => toNum(getCol(r, ["Pts", "pts", "Points"]));
 
 // -------------------- AUTOCOMPLETE LISTS --------------------
 function getLeaguePlayers() {
@@ -303,7 +304,7 @@ function buildLeagueTableRows(leagueName) {
   const q = norm(leagueName);
 
   const rows = leaguePlayersCache
-    .filter((r) => startsOrIncludes(lpLeague(r), leagueName) || norm(lpLeague(r)) === q)
+    .filter((r) => norm(lpLeague(r)) === q)
     .map((r) => ({
       player: String(lpPlayer(r) ?? "").trim(),
       played: Math.round(toNum(lpGames(r)) || 0),
@@ -361,13 +362,13 @@ client.once(Events.ClientReady, async () => {
   ].map((c) => c.toJSON());
 
   await client.application.commands.set(commands);
-  console.log("✅ Global slash commands registered/updated.");
+  console.log("Global slash commands registered/updated.");
 
   // Warm cache (don’t die if it fails)
   if (LEAGUE_PLAYERS_CSV_URL) {
     try {
       await loadLeaguePlayers(true);
-      console.log("✅ League cache warmed.");
+      console.log("League cache warmed.");
     } catch (e) {
       console.warn("League cache warm failed:", e?.message ?? e);
     }
@@ -383,7 +384,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const focused = interaction.options.getFocused(true);
     const typed = String(focused?.value ?? "");
 
-    // Ensure cache for suggestions
     if (cmd === "league" || cmd === "table") {
       try { await ensureLeaguePlayers(); } catch {}
     }
@@ -415,7 +415,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (cmd === "refresh") {
       if (!isAdmin(interaction)) {
-        const embed = makeBaseEmbed("❌ Admin only")
+        const embed = makeBaseEmbed("Admin only")
           .setDescription("You need Administrator permission to run `/refresh`.");
         leagueCachedFooter(embed);
         return interaction.editReply({ embeds: [embed] });
@@ -430,10 +430,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
         console.warn("League refresh failed; keeping cache:", e?.message ?? e);
       }
 
-      const embed = makeBaseEmbed("🔄 Refresh results").setDescription(
+      const embed = makeBaseEmbed("Refresh results").setDescription(
         ok === null
-          ? "League: — (LEAGUE_PLAYERS_CSV_URL not set)"
-          : `League: ${ok ? "✅ refreshed" : "⚠️ refresh failed (using cached)"}`
+          ? "League: (LEAGUE_PLAYERS_CSV_URL not set)"
+          : `League: ${ok ? "refreshed" : "refresh failed (using cached)"}`
       );
 
       leagueCachedFooter(embed);
@@ -461,7 +461,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const embed = makeBaseEmbed(`Player Profile — ${playerName}`);
       if (leagueName) embed.setDescription(`League: **${leagueName}**`);
 
-      // Army list (embed fields max 1024 chars)
       const listText = String(lpList(row) ?? "").trim();
       if (!listText) {
         embed.addFields({ name: "Army List", value: "No list submitted." });
@@ -481,7 +480,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
       }
 
-      // Fixtures + Battleplans
       const opps = lpOpponents(row);
       const fixtureLines = opps.map((o, i) => {
         const bp = LEAGUE_BATTLEPLANS[i] ?? "—";
@@ -494,14 +492,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
         value: fixtureLines.length ? fixtureLines.join("\n") : "No fixtures available.",
       });
 
-      // Results
       embed.addFields({
         name: "Results",
         value: [
           `Played: **${fmtInt(lpGames(row))}**`,
-          `Won: **${fmtInt(lpW(row))}**`,
-          `Drew: **${fmtInt(lpD(row))}**`,
-          `Lost: **${fmtInt(lpL(row))}**`,
+          `Record: **${fmtInt(lpW(row))}-${fmtInt(lpD(row))}-${fmtInt(lpL(row))}**`,
           `Points: **${fmtInt(lpPts(row))}**`,
         ].join("\n"),
         inline: true,
@@ -516,31 +511,41 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const leagueInput = interaction.options.getString("league");
       const leagues = getLeagues();
-      const leagueDisplay =
-        leagues.find((x) => norm(x) === norm(leagueInput)) ?? leagueInput;
+      const leagueExact = leagues.find((x) => norm(x) === norm(leagueInput));
 
-      const tableRows = buildLeagueTableRows(leagueDisplay);
-
-      if (!tableRows.length) {
+      if (!leagueExact) {
         const embed = makeBaseEmbed("No results").setDescription(
-          `No players found for league "${leagueInput}".`
+          `Unknown league "${leagueInput}".`
         );
         leagueCachedFooter(embed);
         return interaction.editReply({ embeds: [embed] });
       }
 
-      const embed = makeBaseEmbed(`League Table — ${leagueDisplay}`);
-      embed.setDescription(`Sorted by **Pts**, then **Wins**, then **Games Played**.`);
+      const tableRows = buildLeagueTableRows(leagueExact);
 
-      // Keep it mobile-readable by paging blocks
+      if (!tableRows.length) {
+        const embed = makeBaseEmbed("No results").setDescription(
+          `No players found for league "${leagueExact}".`
+        );
+        leagueCachedFooter(embed);
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      const leader = tableRows[0];
+      const embed = makeBaseEmbed(`League Table — ${leagueExact}`);
+
+      // Bold points here (works), keep the aligned block below
+      embed.setDescription(
+        `Leader: **${leader.player}** — **${leader.pts} pts** (${leader.w}-${leader.d}-${leader.l})\n` +
+        `Sorted by Pts, then Wins, then Games Played.`
+      );
+
       const MAX_ROWS_PER_BLOCK = 25;
       const blocks = [];
       for (let i = 0; i < tableRows.length; i += MAX_ROWS_PER_BLOCK) {
-        const slice = tableRows.slice(i, i + MAX_ROWS_PER_BLOCK);
-        blocks.push(renderStandingsBlock(slice));
+        blocks.push(renderStandingsBlock(tableRows.slice(i, i + MAX_ROWS_PER_BLOCK)));
       }
 
-      // Add as fields so it scrolls nicely
       blocks.slice(0, 4).forEach((block, idx) => {
         embed.addFields({
           name: blocks.length > 1 ? `Standings (Page ${idx + 1}/${blocks.length})` : "Standings",
@@ -551,7 +556,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       if (blocks.length > 4) {
         embed.addFields({
           name: "Standings (truncated)",
-          value: `Too many players to show in one embed.`,
+          value: "Too many players to show in one embed.",
         });
       }
 
@@ -559,15 +564,15 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    const embed = makeBaseEmbed("❌ Unknown command").setDescription("Try `/league` or `/table`.");
+    const embed = makeBaseEmbed("Unknown command").setDescription("Try `/league` or `/table`.");
     leagueCachedFooter(embed);
     return interaction.editReply({ embeds: [embed] });
 
   } catch (err) {
     console.error("COMMAND ERROR:", err);
 
-    const embed = makeBaseEmbed("❌ Internal error").setDescription(
-      `Check logs.\n\n**Error:** ${String(err?.message ?? err)}`
+    const embed = makeBaseEmbed("Internal error").setDescription(
+      `Check logs.\n\nError: ${String(err?.message ?? err)}`
     );
     leagueCachedFooter(embed);
 
