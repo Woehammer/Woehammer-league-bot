@@ -177,7 +177,7 @@ function getCol(row, candidates) {
 
 // -------------------- CLEAN TABLE RENDERING (NO EMOJIS) --------------------
 // NOTE: Markdown bold does NOT work inside ``` code blocks.
-// We'll keep the aligned table in a code block, and put bold points in a "Top" line above it.
+// We'll keep the aligned table in a code block, and put bold points in a "Leader" line above it.
 function clampName(name, max = 20) {
   const s = String(name ?? "").trim();
   if (s.length <= max) return s;
@@ -196,16 +196,16 @@ function padL(s, n) {
 
 function renderStandingsBlock(rows) {
   const NAME_W = 22;
-  const REC_W = 5; // "W-D-L" like "3-0-2"
+  const REC_W = 5; // "W-D-L"
 
   const header =
-    `${padR("Player", NAME_W)} ${padL("P", 2)} ${padR("W-D-L", REC_W)} ${padL("Pts", 3)}`;
+    `${padR("Player", NAME_W)} ${padR("W-D-L", REC_W)} ${padL("Pts", 3)}`;
   const rule = "-".repeat(header.length);
 
   const lines = rows.map((r) => {
     const name = clampName(r.player, NAME_W);
     const rec = `${r.w}-${r.d}-${r.l}`;
-    return `${padR(name, NAME_W)} ${padL(r.played, 2)} ${padR(rec, REC_W)} ${padL(r.pts, 3)}`;
+    return `${padR(name, NAME_W)} ${padR(rec, REC_W)} ${padL(r.pts, 3)}`;
   });
 
   return ["```", header, rule, ...lines, "```"].join("\n");
@@ -305,14 +305,22 @@ function buildLeagueTableRows(leagueName) {
 
   const rows = leaguePlayersCache
     .filter((r) => norm(lpLeague(r)) === q)
-    .map((r) => ({
-      player: String(lpPlayer(r) ?? "").trim(),
-      played: Math.round(toNum(lpGames(r)) || 0),
-      w: Math.round(toNum(lpW(r)) || 0),
-      d: Math.round(toNum(lpD(r)) || 0),
-      l: Math.round(toNum(lpL(r)) || 0),
-      pts: Math.round(toNum(lpPts(r)) || 0),
-    }))
+    .map((r) => {
+      const w = Math.round(toNum(lpW(r)) || 0);
+      const d = Math.round(toNum(lpD(r)) || 0);
+      const l = Math.round(toNum(lpL(r)) || 0);
+      // Keep "played" for sorting stability even if we don't display it
+      const played = Number.isFinite(toNum(lpGames(r))) ? Math.round(toNum(lpGames(r))) : (w + d + l);
+
+      return {
+        player: String(lpPlayer(r) ?? "").trim(),
+        played,
+        w,
+        d,
+        l,
+        pts: Math.round(toNum(lpPts(r)) || 0),
+      };
+    })
     .filter((x) => x.player);
 
   // Sort: Pts desc, Wins desc, Played desc, Name asc
@@ -495,7 +503,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       embed.addFields({
         name: "Results",
         value: [
-          `Played: **${fmtInt(lpGames(row))}**`,
           `Record: **${fmtInt(lpW(row))}-${fmtInt(lpD(row))}-${fmtInt(lpL(row))}**`,
           `Points: **${fmtInt(lpPts(row))}**`,
         ].join("\n"),
@@ -534,7 +541,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const leader = tableRows[0];
       const embed = makeBaseEmbed(`League Table — ${leagueExact}`);
 
-      // Bold points here (works), keep the aligned block below
       embed.setDescription(
         `Leader: **${leader.player}** — **${leader.pts} pts** (${leader.w}-${leader.d}-${leader.l})\n` +
         `Sorted by Pts, then Wins, then Games Played.`
