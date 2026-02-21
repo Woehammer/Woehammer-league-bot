@@ -6,12 +6,13 @@
 //   LEAGUE_PLAYERS_CSV_URL   (published Google Sheet CSV link)
 //
 // Commands:
-//   /league name:<player>   -> list + fixtures + results (+ battleplans)
-//   /refresh                -> admin refresh of league CSV
+//   /league name:<player>    -> list + fixtures + results (+ battleplans)
+//   /table league:<league>   -> league table (standings)
+//   /refresh                 -> admin refresh of league CSV
 //
 // Notes:
 // - Soft-fail fetching: if Google 401s but cache exists, bot still works.
-// - Autocomplete for player names.
+// - Autocomplete for player names and league names.
 // - Healthcheck server for hosting platforms.
 
 import http from "http";
@@ -30,7 +31,7 @@ const LEAGUE_PLAYERS_CSV_URL = process.env.LEAGUE_PLAYERS_CSV_URL;
 
 if (!TOKEN) throw new Error("Missing DISCORD_TOKEN env var");
 if (!LEAGUE_PLAYERS_CSV_URL)
-  console.warn("⚠️ Missing LEAGUE_PLAYERS_CSV_URL env var (/league will fail).");
+  console.warn("⚠️ Missing LEAGUE_PLAYERS_CSV_URL env var (/league and /table will fail).");
 
 console.log("LEAGUE_PLAYERS_CSV_URL =", LEAGUE_PLAYERS_CSV_URL);
 
@@ -124,6 +125,29 @@ function chunkText(text, max = 1024) {
   return chunks;
 }
 
+function chunkByLines(lines, maxLen = 1024) {
+  const chunks = [];
+  let cur = "";
+
+  for (const line of lines) {
+    const add = (cur ? "\n" : "") + line;
+    if ((cur + add).length > maxLen) {
+      if (cur) chunks.push(cur);
+      if (line.length > maxLen) {
+        chunkText(line, maxLen).forEach((c) => chunks.push(c));
+        cur = "";
+      } else {
+        cur = line;
+      }
+    } else {
+      cur += add;
+    }
+  }
+
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
 function toNum(x) {
   const s = String(x ?? "").trim();
   if (!s) return NaN;
@@ -203,7 +227,8 @@ async function fetchCSV(url, { cacheBust = false } = {}) {
 }
 
 async function loadLeaguePlayers(force = false) {
-  if (!LEAGUE_PLAYERS_CSV_URL) throw new Error("Missing LEAGUE_PLAYERS_CSV_URL env var");
+  if (!LEAGUE_PLAYERS_CSV_URL)
+    throw new Error("Missing LEAGUE_PLAYERS_CSV_URL env var");
   if (!force && leaguePlayersCache.length) return;
 
   leaguePlayersCache = await fetchCSV(LEAGUE_PLAYERS_CSV_URL, { cacheBust: force });
@@ -241,8 +266,17 @@ const lpPts   = (r) => toNum(getCol(r, ["Pts", "pts", "Points"]));
 function getLeaguePlayers() {
   const names = leaguePlayersCache
     .map((r) => lpPlayer(r))
-    .map((x) => String(x ?? "").trim());
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean);
   return uniq(names);
+}
+
+function getLeagues() {
+  const leagues = leaguePlayersCache
+    .map((r) => lpLeague(r))
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean);
+  return uniq(leagues);
 }
 
 function makeChoices(list, typed) {
@@ -253,6 +287,49 @@ function makeChoices(list, typed) {
       name: x.length > 100 ? x.slice(0, 97) + "..." : x,
       value: x,
     }));
+}
+
+// -------------------- LEAGUE TABLE HELPERS --------------------
+function buildLeagueTableRows(leagueInput) {
+  const target = norm(leagueInput);
+
+  const rows = leaguePlayersCache
+    .filter((r) => norm(lpLeague(r)) === target)
+    .map((r) => {
+      const player = String(lpPlayer(r) ?? "").trim() || "Unknown";
+      const played = lpGames(r);
+      const w = lpW(r);
+      const d = lpD(r);
+      const l = lpL(r);
+      const pts = lpPts(r);
+
+      return {
+        player,
+        played: Number.isFinite(played) ? played : 0,
+        w: Number.isFinite(w) ? w : 0,
+        d: Number.isFinite(d) ? d : 0,
+        l: Number.isFinite(l) ? l : 0,
+        pts: Number.isFinite(pts) ? pts : 0,
+      };
+    });
+
+  // Sort: Pts desc, then W desc, then Played asc
+  rows.sort((a, b) => {
+    if (b.pts !== a.pts) return b.pts - a.pts;
+    if (b.w !== a.w) return b.w - a.w;
+    return a.played - b.played;
+  });
+
+  return rows;
+}
+
+function formatLeagueTableLines(rows, limit = 50) {
+  const slice = rows.slice(0, limit);
+
+  return slice.map((r, i) => {
+    const pos = String(i + 1).padStart(2, "0");
+    return `**${pos}. ${r.player}** — Pts **${r.pts}** | ${r.played}P ${r.w}-${r.d}-${r.l}`;
+  });
 }
 
 // -------------------- DISCORD CLIENT --------------------
@@ -269,6 +346,17 @@ client.once(Events.ClientReady, async () => {
         o
           .setName("name")
           .setDescription("Player name")
+          .setRequired(true)
+          .setAutocomplete(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("table")
+      .setDescription("Show the league table (standings) for a league")
+      .addStringOption((o) =>
+        o
+          .setName("league")
+          .setDescription("League name")
           .setRequired(true)
           .setAutocomplete(true)
       ),
@@ -305,6 +393,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (cmd === "league" && focused.name === "name") {
       try { await ensureLeaguePlayers(); } catch {}
       const choices = makeChoices(getLeaguePlayers(), typed);
+      return interaction.respond(choices.slice(0, 25));
+    }
+
+    if (cmd === "table" && focused.name === "league") {
+      try { await ensureLeaguePlayers(); } catch {}
+      const choices = makeChoices(getLeagues(), typed);
       return interaction.respond(choices.slice(0, 25));
     }
 
@@ -421,7 +515,44 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    const embed = makeBaseEmbed("❌ Unknown command").setDescription("Try `/league`.");
+    if (cmd === "table") {
+      await ensureLeaguePlayers();
+
+      const leagueInput = interaction.options.getString("league");
+      const leagues = getLeagues();
+      const leagueDisplay =
+        leagues.find((x) => norm(x) === norm(leagueInput)) ?? leagueInput;
+
+      const tableRows = buildLeagueTableRows(leagueDisplay);
+
+      if (!tableRows.length) {
+        const embed = makeBaseEmbed("No results").setDescription(
+          `No players found for league "${leagueInput}".`
+        );
+        leagueCachedFooter(embed);
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      const embed = makeBaseEmbed(`League Table — ${leagueDisplay}`);
+      embed.setDescription(
+        `Sorted by **Pts**, then **Wins**, then **Games Played**.\n(Proper tie-breakers need scorelines / VP.)`
+      );
+
+      const lines = formatLeagueTableLines(tableRows, 50);
+      const chunks = chunkByLines(lines, 1024);
+
+      chunks.forEach((chunk, idx) => {
+        embed.addFields({
+          name: idx === 0 ? "Standings" : "Standings (cont.)",
+          value: chunk,
+        });
+      });
+
+      leagueCachedFooter(embed);
+      return interaction.editReply({ embeds: [embed] });
+    }
+
+    const embed = makeBaseEmbed("❌ Unknown command").setDescription("Try `/league` or `/table`.");
     leagueCachedFooter(embed);
     return interaction.editReply({ embeds: [embed] });
 
