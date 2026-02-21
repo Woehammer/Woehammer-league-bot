@@ -6,14 +6,15 @@
 //   LEAGUE_PLAYERS_CSV_URL   (published Google Sheet CSV link)
 //
 // Commands:
-//   /league name:<player>   -> list + fixtures + results (+ battleplans)
-//   /table league:<league>  -> league standings table (clean esports style)
-//   /refresh                -> admin refresh of league CSV
+//   /league name:<player>      -> list + fixtures + results (+ battleplans) + deadline
+//   /table league:<league>     -> standings table (clean esports style)
+//   /refresh                   -> admin refresh of league CSV
 //
 // Notes:
 // - Soft-fail fetching: if Google 401s but cache exists, bot still works.
 // - Autocomplete for player names and leagues.
 // - Healthcheck server for hosting platforms.
+// - Table: no emojis, no position numbers, no "Played" column; shows W-D-L and Pts.
 
 import http from "http";
 import {
@@ -25,17 +26,22 @@ import {
   EmbedBuilder,
 } from "discord.js";
 
-// -------------------- ENV --------------------
+// ==================================================
+// ENV
+// ==================================================
 const TOKEN = process.env.DISCORD_TOKEN;
 const LEAGUE_PLAYERS_CSV_URL = process.env.LEAGUE_PLAYERS_CSV_URL;
 
 if (!TOKEN) throw new Error("Missing DISCORD_TOKEN env var");
-if (!LEAGUE_PLAYERS_CSV_URL)
-  console.warn("⚠️ Missing LEAGUE_PLAYERS_CSV_URL env var (/league and /table will fail).");
+if (!LEAGUE_PLAYERS_CSV_URL) {
+  console.warn("⚠️ Missing LEAGUE_PLAYERS_CSV_URL env var (/league, /table will fail).");
+}
 
 console.log("LEAGUE_PLAYERS_CSV_URL =", LEAGUE_PLAYERS_CSV_URL);
 
-// -------------------- HEALTHCHECK --------------------
+// ==================================================
+// HEALTHCHECK
+// ==================================================
 const PORT = process.env.PORT || 3000;
 http
   .createServer((req, res) => {
@@ -44,7 +50,9 @@ http
   })
   .listen(PORT, () => console.log(`Healthcheck server listening on ${PORT}`));
 
-// -------------------- LEAGUE CONSTANTS --------------------
+// ==================================================
+// LEAGUE CONSTANTS
+// ==================================================
 const LEAGUE_BATTLEPLANS = [
   "Paths of the Fey",
   "The Liferoots",
@@ -53,7 +61,12 @@ const LEAGUE_BATTLEPLANS = [
   "Roiling Roots",
 ];
 
-// -------------------- CSV parsing (handles quotes reasonably) --------------------
+// Midnight UK on 8th April 2026 (BST is UTC+1 in April)
+const LEAGUE_DEADLINE = new Date("2026-04-08T23:59:59+01:00");
+
+// ==================================================
+// CSV PARSER (handles quotes reasonably)
+// ==================================================
 function parseCSV(text) {
   text = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
@@ -71,23 +84,19 @@ function parseCSV(text) {
       i++;
       continue;
     }
-
     if (c === '"') {
       inQuotes = !inQuotes;
       continue;
     }
-
     if (!inQuotes && (c === "," || c === "\n")) {
       row.push(field);
       field = "";
-
       if (c === "\n") {
         if (row.some((x) => String(x ?? "").trim() !== "")) rows.push(row);
         row = [];
       }
       continue;
     }
-
     field += c;
   }
 
@@ -106,7 +115,9 @@ function parseCSV(text) {
   return data;
 }
 
-// -------------------- HELPERS --------------------
+// ==================================================
+// HELPERS
+// ==================================================
 function norm(s) {
   return String(s ?? "")
     .replace(/\u00A0/g, " ")
@@ -134,7 +145,7 @@ function toNum(x) {
 }
 
 function fmtInt(x) {
-  if (!Number.isFinite(x)) return "—";
+  if (!Number.isFinite(x)) return "0";
   return `${Math.round(x)}`;
 }
 
@@ -175,10 +186,27 @@ function getCol(row, candidates) {
   return "";
 }
 
-// -------------------- CLEAN TABLE RENDERING (NO EMOJIS) --------------------
-// NOTE: Markdown bold does NOT work inside ``` code blocks.
-// We'll keep the aligned table in a code block, and put bold points in a "Leader" line above it.
-function clampName(name, max = 20) {
+// ==================================================
+// DEADLINE LINES (Discord timestamp tags convert per viewer)
+// ==================================================
+function deadlineLines() {
+  const deadlineUnix = Math.floor(LEAGUE_DEADLINE.getTime() / 1000);
+  const diffMs = LEAGUE_DEADLINE.getTime() - Date.now();
+
+  const line1 = `You have until <t:${deadlineUnix}:F> to arrange and play your games.`;
+  const line2 =
+    diffMs <= 0
+      ? `This deadline passed <t:${deadlineUnix}:R>.`
+      : `This leaves you <t:${deadlineUnix}:R>.`;
+
+  return [line1, line2];
+}
+
+// ==================================================
+// CLEAN TABLE RENDERING (no emojis, no position numbers, no Played column)
+// Columns: Player | W-D-L | Pts
+// ==================================================
+function clampName(name, max = 22) {
   const s = String(name ?? "").trim();
   if (s.length <= max) return s;
   return s.slice(0, max - 1) + "…";
@@ -196,22 +224,25 @@ function padL(s, n) {
 
 function renderStandingsBlock(rows) {
   const NAME_W = 22;
-  const REC_W = 5; // "W-D-L"
+  const WDL_W = 7; // e.g. 12-3-4
+  const PTS_W = 5; // e.g. [12]
 
-  const header =
-    `${padR("Player", NAME_W)} ${padR("W-D-L", REC_W)} ${padL("Pts", 3)}`;
+  const header = `${padR("Player", NAME_W)} ${padR("W-D-L", WDL_W)} ${padR("Pts", PTS_W)}`;
   const rule = "-".repeat(header.length);
 
   const lines = rows.map((r) => {
     const name = clampName(r.player, NAME_W);
-    const rec = `${r.w}-${r.d}-${r.l}`;
-    return `${padR(name, NAME_W)} ${padR(rec, REC_W)} ${padL(r.pts, 3)}`;
+    const wdl = `${r.w}-${r.d}-${r.l}`;
+    const pts = `[${r.pts}]`;
+    return `${padR(name, NAME_W)} ${padR(wdl, WDL_W)} ${padL(pts, PTS_W)}`;
   });
 
   return ["```", header, rule, ...lines, "```"].join("\n");
 }
 
-// -------------------- LEAGUE CACHE + FETCH --------------------
+// ==================================================
+// LEAGUE CACHE + FETCH
+// ==================================================
 let leaguePlayersCache = [];
 let leaguePlayersCachedAt = null;
 
@@ -254,26 +285,29 @@ async function ensureLeaguePlayers() {
   }
 }
 
-// -------------------- LEAGUE CSV COLUMN HELPERS --------------------
+// ==================================================
+// LEAGUE CSV COLUMN HELPERS
+// ==================================================
 const lpPlayer = (r) => getCol(r, ["Player", "player", "Name", "name"]);
 const lpLeague = (r) => getCol(r, ["League", "league"]);
 const lpList = (r) => getCol(r, ["Lists", "List", "lists", "list"]);
 
-const lpOpponents = (r) => ([
+const lpOpponents = (r) => [
   getCol(r, ["Rnd 1 Opponent", "Round 1 Opponent", "R1 Opponent"]),
   getCol(r, ["Rnd 2 Opponent", "Round 2 Opponent", "R2 Opponent"]),
   getCol(r, ["Rnd 3 Opponent", "Round 3 Opponent", "R3 Opponent"]),
   getCol(r, ["Rnd 4 Opponent", "Round 4 Opponent", "R4 Opponent"]),
   getCol(r, ["Rnd 5 Opponent", "Round 5 Opponent", "R5 Opponent"]),
-]);
+];
 
-const lpGames = (r) => toNum(getCol(r, ["Games", "games", "Played"]));
 const lpW = (r) => toNum(getCol(r, ["W", "w", "Wins"]));
 const lpD = (r) => toNum(getCol(r, ["D", "d", "Draws"]));
 const lpL = (r) => toNum(getCol(r, ["L", "l", "Losses"]));
 const lpPts = (r) => toNum(getCol(r, ["Pts", "pts", "Points"]));
 
-// -------------------- AUTOCOMPLETE LISTS --------------------
+// ==================================================
+// AUTOCOMPLETE LISTS
+// ==================================================
 function getLeaguePlayers() {
   const names = leaguePlayersCache
     .map((r) => lpPlayer(r))
@@ -299,42 +333,47 @@ function makeChoices(list, typed) {
     }));
 }
 
-// -------------------- LEAGUE TABLE BUILD --------------------
+// ==================================================
+// LEAGUE TABLE BUILD
+// ==================================================
 function buildLeagueTableRows(leagueName) {
   const q = norm(leagueName);
 
   const rows = leaguePlayersCache
-    .filter((r) => norm(lpLeague(r)) === q)
-    .map((r) => {
-      const w = Math.round(toNum(lpW(r)) || 0);
-      const d = Math.round(toNum(lpD(r)) || 0);
-      const l = Math.round(toNum(lpL(r)) || 0);
-      // Keep "played" for sorting stability even if we don't display it
-      const played = Number.isFinite(toNum(lpGames(r))) ? Math.round(toNum(lpGames(r))) : (w + d + l);
-
-      return {
-        player: String(lpPlayer(r) ?? "").trim(),
-        played,
-        w,
-        d,
-        l,
-        pts: Math.round(toNum(lpPts(r)) || 0),
-      };
+    .filter((r) => {
+      const L = lpLeague(r);
+      if (!L) return false;
+      return norm(L) === q || startsOrIncludes(L, leagueName) || startsOrIncludes(L, q);
     })
+    .map((r) => ({
+      player: String(lpPlayer(r) ?? "").trim(),
+      w: Math.round(toNum(lpW(r)) || 0),
+      d: Math.round(toNum(lpD(r)) || 0),
+      l: Math.round(toNum(lpL(r)) || 0),
+      pts: Math.round(toNum(lpPts(r)) || 0),
+    }))
     .filter((x) => x.player);
 
-  // Sort: Pts desc, Wins desc, Played desc, Name asc
+  // Sort: Pts desc, Wins desc, Games desc, Name asc
   rows.sort((a, b) => {
     if (b.pts !== a.pts) return b.pts - a.pts;
     if (b.w !== a.w) return b.w - a.w;
-    if (b.played !== a.played) return b.played - a.played;
+    const aGames = a.w + a.d + a.l;
+    const bGames = b.w + b.d + b.l;
+    if (bGames !== aGames) return bGames - aGames;
     return a.player.localeCompare(b.player);
   });
 
   return rows;
 }
 
-// -------------------- DISCORD CLIENT --------------------
+function findLeader(rows) {
+  return rows?.length ? rows[0] : null;
+}
+
+// ==================================================
+// DISCORD CLIENT
+// ==================================================
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once(Events.ClientReady, async () => {
@@ -345,22 +384,14 @@ client.once(Events.ClientReady, async () => {
       .setName("league")
       .setDescription("Show a player's army list, fixtures, and results")
       .addStringOption((o) =>
-        o
-          .setName("name")
-          .setDescription("Player name")
-          .setRequired(true)
-          .setAutocomplete(true)
+        o.setName("name").setDescription("Player name").setRequired(true).setAutocomplete(true)
       ),
 
     new SlashCommandBuilder()
       .setName("table")
       .setDescription("Show the league standings table")
       .addStringOption((o) =>
-        o
-          .setName("league")
-          .setDescription("League name")
-          .setRequired(true)
-          .setAutocomplete(true)
+        o.setName("league").setDescription("League name").setRequired(true).setAutocomplete(true)
       ),
 
     new SlashCommandBuilder()
@@ -370,20 +401,22 @@ client.once(Events.ClientReady, async () => {
   ].map((c) => c.toJSON());
 
   await client.application.commands.set(commands);
-  console.log("Global slash commands registered/updated.");
+  console.log("✅ Global slash commands registered/updated.");
 
-  // Warm cache (don’t die if it fails)
+  // Warm cache
   if (LEAGUE_PLAYERS_CSV_URL) {
     try {
       await loadLeaguePlayers(true);
-      console.log("League cache warmed.");
+      console.log("✅ League cache warmed.");
     } catch (e) {
       console.warn("League cache warm failed:", e?.message ?? e);
     }
   }
 });
 
-// -------------------- AUTOCOMPLETE --------------------
+// ==================================================
+// AUTOCOMPLETE
+// ==================================================
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isAutocomplete()) return;
 
@@ -393,7 +426,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const typed = String(focused?.value ?? "");
 
     if (cmd === "league" || cmd === "table") {
-      try { await ensureLeaguePlayers(); } catch {}
+      try {
+        await ensureLeaguePlayers();
+      } catch {}
     }
 
     if (cmd === "league" && focused.name === "name") {
@@ -408,23 +443,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     return interaction.respond([]);
   } catch {
-    try { return interaction.respond([]); } catch {}
+    try {
+      return interaction.respond([]);
+    } catch {}
   }
 });
 
-// -------------------- COMMANDS --------------------
+// ==================================================
+// COMMANDS
+// ==================================================
 client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  try { await interaction.deferReply(); } catch {}
+  try {
+    await interaction.deferReply();
+  } catch {}
 
   try {
     const cmd = interaction.commandName;
 
     if (cmd === "refresh") {
       if (!isAdmin(interaction)) {
-        const embed = makeBaseEmbed("Admin only")
-          .setDescription("You need Administrator permission to run `/refresh`.");
+        const embed = makeBaseEmbed("Admin Only").setDescription(
+          "You need Administrator permission to run `/refresh`."
+        );
         leagueCachedFooter(embed);
         return interaction.editReply({ embeds: [embed] });
       }
@@ -438,9 +480,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
         console.warn("League refresh failed; keeping cache:", e?.message ?? e);
       }
 
-      const embed = makeBaseEmbed("Refresh results").setDescription(
+      const embed = makeBaseEmbed("Refresh Results").setDescription(
         ok === null
-          ? "League: (LEAGUE_PLAYERS_CSV_URL not set)"
+          ? "League: — (LEAGUE_PLAYERS_CSV_URL not set)"
           : `League: ${ok ? "refreshed" : "refresh failed (using cached)"}`
       );
 
@@ -457,8 +499,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const row = leaguePlayersCache.find((r) => norm(lpPlayer(r)).includes(q));
 
       if (!row) {
-        const embed = makeBaseEmbed("No results")
-          .setDescription(`No league player found for "${input}".`);
+        const embed = makeBaseEmbed("No Results").setDescription(
+          `No league player found for "${input}".`
+        );
         leagueCachedFooter(embed);
         return interaction.editReply({ embeds: [embed] });
       }
@@ -469,6 +512,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       const embed = makeBaseEmbed(`Player Profile — ${playerName}`);
       if (leagueName) embed.setDescription(`League: **${leagueName}**`);
 
+      // Army list
       const listText = String(lpList(row) ?? "").trim();
       if (!listText) {
         embed.addFields({ name: "Army List", value: "No list submitted." });
@@ -488,25 +532,35 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
       }
 
+      // Fixtures + Battleplans
       const opps = lpOpponents(row);
       const fixtureLines = opps.map((o, i) => {
         const bp = LEAGUE_BATTLEPLANS[i] ?? "—";
         const oppTxt = o ? o : "—";
-        return `Round ${i + 1}: ${oppTxt} — **${bp}**`;
+        return `Round ${i + 1}: ${oppTxt} — ${bp}`;
       });
 
       embed.addFields({
-        name: "Fixtures & Battleplans",
+        name: "Fixtures",
         value: fixtureLines.length ? fixtureLines.join("\n") : "No fixtures available.",
       });
 
+      // Record + points (compact)
+      const w = Math.round(toNum(lpW(row)) || 0);
+      const d = Math.round(toNum(lpD(row)) || 0);
+      const l = Math.round(toNum(lpL(row)) || 0);
+      const pts = Math.round(toNum(lpPts(row)) || 0);
+
       embed.addFields({
-        name: "Results",
-        value: [
-          `Record: **${fmtInt(lpW(row))}-${fmtInt(lpD(row))}-${fmtInt(lpL(row))}**`,
-          `Points: **${fmtInt(lpPts(row))}**`,
-        ].join("\n"),
+        name: "Record",
+        value: `**${w}-${d}-${l}**\nPoints: **${pts}**`,
         inline: true,
+      });
+
+      // Deadline at the end (as requested)
+      embed.addFields({
+        name: "Deadline",
+        value: deadlineLines().join("\n"),
       });
 
       leagueCachedFooter(embed);
@@ -518,32 +572,28 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       const leagueInput = interaction.options.getString("league");
       const leagues = getLeagues();
-      const leagueExact = leagues.find((x) => norm(x) === norm(leagueInput));
+      const leagueDisplay = leagues.find((x) => norm(x) === norm(leagueInput)) ?? leagueInput;
 
-      if (!leagueExact) {
-        const embed = makeBaseEmbed("No results").setDescription(
-          `Unknown league "${leagueInput}".`
-        );
-        leagueCachedFooter(embed);
-        return interaction.editReply({ embeds: [embed] });
-      }
-
-      const tableRows = buildLeagueTableRows(leagueExact);
+      const tableRows = buildLeagueTableRows(leagueDisplay);
 
       if (!tableRows.length) {
-        const embed = makeBaseEmbed("No results").setDescription(
-          `No players found for league "${leagueExact}".`
+        const embed = makeBaseEmbed("No Results").setDescription(
+          `No players found for league "${leagueInput}".`
         );
         leagueCachedFooter(embed);
         return interaction.editReply({ embeds: [embed] });
       }
 
-      const leader = tableRows[0];
-      const embed = makeBaseEmbed(`League Table — ${leagueExact}`);
+      const leader = findLeader(tableRows);
+      const leaderLine = leader
+        ? `Leader: **${leader.player}** — **${leader.pts} pts** (${leader.w}-${leader.d}-${leader.l})`
+        : null;
 
+      const embed = makeBaseEmbed(`League Table — ${leagueDisplay}`);
       embed.setDescription(
-        `Leader: **${leader.player}** — **${leader.pts} pts** (${leader.w}-${leader.d}-${leader.l})\n` +
-        `Sorted by Pts, then Wins, then Games Played.`
+        [leaderLine, "Sorted by **Pts**, then **Wins**, then **Games**."]
+          .filter(Boolean)
+          .join("\n")
       );
 
       const MAX_ROWS_PER_BLOCK = 25;
@@ -570,14 +620,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    const embed = makeBaseEmbed("Unknown command").setDescription("Try `/league` or `/table`.");
+    const embed = makeBaseEmbed("Unknown Command").setDescription("Try `/league` or `/table`.");
     leagueCachedFooter(embed);
     return interaction.editReply({ embeds: [embed] });
-
   } catch (err) {
     console.error("COMMAND ERROR:", err);
 
-    const embed = makeBaseEmbed("Internal error").setDescription(
+    const embed = makeBaseEmbed("Internal Error").setDescription(
       `Check logs.\n\nError: ${String(err?.message ?? err)}`
     );
     leagueCachedFooter(embed);
