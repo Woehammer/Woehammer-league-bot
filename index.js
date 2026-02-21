@@ -6,13 +6,13 @@
 //   LEAGUE_PLAYERS_CSV_URL   (published Google Sheet CSV link)
 //
 // Commands:
-//   /league name:<player>    -> list + fixtures + results (+ battleplans)
-//   /table league:<league>   -> league table (standings)
-//   /refresh                 -> admin refresh of league CSV
+//   /league name:<player>   -> list + fixtures + results (+ battleplans)
+//   /table league:<league>  -> league standings table (clean esports style)
+//   /refresh                -> admin refresh of league CSV
 //
 // Notes:
 // - Soft-fail fetching: if Google 401s but cache exists, bot still works.
-// - Autocomplete for player names and league names.
+// - Autocomplete for player names and leagues.
 // - Healthcheck server for hosting platforms.
 
 import http from "http";
@@ -125,29 +125,6 @@ function chunkText(text, max = 1024) {
   return chunks;
 }
 
-function chunkByLines(lines, maxLen = 1024) {
-  const chunks = [];
-  let cur = "";
-
-  for (const line of lines) {
-    const add = (cur ? "\n" : "") + line;
-    if ((cur + add).length > maxLen) {
-      if (cur) chunks.push(cur);
-      if (line.length > maxLen) {
-        chunkText(line, maxLen).forEach((c) => chunks.push(c));
-        cur = "";
-      } else {
-        cur = line;
-      }
-    } else {
-      cur += add;
-    }
-  }
-
-  if (cur) chunks.push(cur);
-  return chunks;
-}
-
 function toNum(x) {
   const s = String(x ?? "").trim();
   if (!s) return NaN;
@@ -200,6 +177,39 @@ function getCol(row, candidates) {
   return "";
 }
 
+// -------------------- CLEAN TABLE RENDERING (NO EMOJIS) --------------------
+function clampName(name, max = 20) {
+  const s = String(name ?? "").trim();
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1) + "…";
+}
+
+function padR(s, n) {
+  s = String(s ?? "");
+  return s.length >= n ? s.slice(0, n) : s + " ".repeat(n - s.length);
+}
+
+function padL(s, n) {
+  s = String(s ?? "");
+  return s.length >= n ? s.slice(0, n) : " ".repeat(n - s.length) + s;
+}
+
+function renderStandingsBlock(rows) {
+  const NAME_W = 22;
+
+  const header =
+    `${padR("#", 3)} ${padR("Player", NAME_W)} ${padL("P", 2)} ${padL("W", 2)} ${padL("D", 2)} ${padL("L", 2)} ${padL("Pts", 3)}`;
+  const rule = "-".repeat(header.length);
+
+  const lines = rows.map((r, i) => {
+    const rank = `${i + 1}.`;
+    const name = clampName(r.player, NAME_W);
+    return `${padR(rank, 3)} ${padR(name, NAME_W)} ${padL(r.played, 2)} ${padL(r.w, 2)} ${padL(r.d, 2)} ${padL(r.l, 2)} ${padL(r.pts, 3)}`;
+  });
+
+  return ["```", header, rule, ...lines, "```"].join("\n");
+}
+
 // -------------------- LEAGUE CACHE + FETCH --------------------
 let leaguePlayersCache = [];
 let leaguePlayersCachedAt = null;
@@ -227,8 +237,7 @@ async function fetchCSV(url, { cacheBust = false } = {}) {
 }
 
 async function loadLeaguePlayers(force = false) {
-  if (!LEAGUE_PLAYERS_CSV_URL)
-    throw new Error("Missing LEAGUE_PLAYERS_CSV_URL env var");
+  if (!LEAGUE_PLAYERS_CSV_URL) throw new Error("Missing LEAGUE_PLAYERS_CSV_URL env var");
   if (!force && leaguePlayersCache.length) return;
 
   leaguePlayersCache = await fetchCSV(LEAGUE_PLAYERS_CSV_URL, { cacheBust: force });
@@ -263,11 +272,11 @@ const lpD     = (r) => toNum(getCol(r, ["D", "d", "Draws"]));
 const lpL     = (r) => toNum(getCol(r, ["L", "l", "Losses"]));
 const lpPts   = (r) => toNum(getCol(r, ["Pts", "pts", "Points"]));
 
+// -------------------- AUTOCOMPLETE LISTS --------------------
 function getLeaguePlayers() {
   const names = leaguePlayersCache
     .map((r) => lpPlayer(r))
-    .map((x) => String(x ?? "").trim())
-    .filter(Boolean);
+    .map((x) => String(x ?? "").trim());
   return uniq(names);
 }
 
@@ -276,7 +285,7 @@ function getLeagues() {
     .map((r) => lpLeague(r))
     .map((x) => String(x ?? "").trim())
     .filter(Boolean);
-  return uniq(leagues);
+  return uniq(leagues).sort((a, b) => a.localeCompare(b));
 }
 
 function makeChoices(list, typed) {
@@ -289,47 +298,31 @@ function makeChoices(list, typed) {
     }));
 }
 
-// -------------------- LEAGUE TABLE HELPERS --------------------
-function buildLeagueTableRows(leagueInput) {
-  const target = norm(leagueInput);
+// -------------------- LEAGUE TABLE BUILD --------------------
+function buildLeagueTableRows(leagueName) {
+  const q = norm(leagueName);
 
   const rows = leaguePlayersCache
-    .filter((r) => norm(lpLeague(r)) === target)
-    .map((r) => {
-      const player = String(lpPlayer(r) ?? "").trim() || "Unknown";
-      const played = lpGames(r);
-      const w = lpW(r);
-      const d = lpD(r);
-      const l = lpL(r);
-      const pts = lpPts(r);
+    .filter((r) => startsOrIncludes(lpLeague(r), leagueName) || norm(lpLeague(r)) === q)
+    .map((r) => ({
+      player: String(lpPlayer(r) ?? "").trim(),
+      played: Math.round(toNum(lpGames(r)) || 0),
+      w: Math.round(toNum(lpW(r)) || 0),
+      d: Math.round(toNum(lpD(r)) || 0),
+      l: Math.round(toNum(lpL(r)) || 0),
+      pts: Math.round(toNum(lpPts(r)) || 0),
+    }))
+    .filter((x) => x.player);
 
-      return {
-        player,
-        played: Number.isFinite(played) ? played : 0,
-        w: Number.isFinite(w) ? w : 0,
-        d: Number.isFinite(d) ? d : 0,
-        l: Number.isFinite(l) ? l : 0,
-        pts: Number.isFinite(pts) ? pts : 0,
-      };
-    });
-
-  // Sort: Pts desc, then W desc, then Played asc
+  // Sort: Pts desc, Wins desc, Played desc, Name asc
   rows.sort((a, b) => {
     if (b.pts !== a.pts) return b.pts - a.pts;
     if (b.w !== a.w) return b.w - a.w;
-    return a.played - b.played;
+    if (b.played !== a.played) return b.played - a.played;
+    return a.player.localeCompare(b.player);
   });
 
   return rows;
-}
-
-function formatLeagueTableLines(rows, limit = 50) {
-  const slice = rows.slice(0, limit);
-
-  return slice.map((r, i) => {
-    const pos = String(i + 1).padStart(2, "0");
-    return `**${pos}. ${r.player}** — Pts **${r.pts}** | ${r.played}P ${r.w}-${r.d}-${r.l}`;
-  });
 }
 
 // -------------------- DISCORD CLIENT --------------------
@@ -352,7 +345,7 @@ client.once(Events.ClientReady, async () => {
 
     new SlashCommandBuilder()
       .setName("table")
-      .setDescription("Show the league table (standings) for a league")
+      .setDescription("Show the league standings table")
       .addStringOption((o) =>
         o
           .setName("league")
@@ -390,14 +383,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const focused = interaction.options.getFocused(true);
     const typed = String(focused?.value ?? "");
 
-    if (cmd === "league" && focused.name === "name") {
+    // Ensure cache for suggestions
+    if (cmd === "league" || cmd === "table") {
       try { await ensureLeaguePlayers(); } catch {}
+    }
+
+    if (cmd === "league" && focused.name === "name") {
       const choices = makeChoices(getLeaguePlayers(), typed);
       return interaction.respond(choices.slice(0, 25));
     }
 
     if (cmd === "table" && focused.name === "league") {
-      try { await ensureLeaguePlayers(); } catch {}
       const choices = makeChoices(getLeagues(), typed);
       return interaction.respond(choices.slice(0, 25));
     }
@@ -534,19 +530,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       const embed = makeBaseEmbed(`League Table — ${leagueDisplay}`);
-      embed.setDescription(
-        `Sorted by **Pts**, then **Wins**, then **Games Played**.\n(Proper tie-breakers need scorelines / VP.)`
-      );
+      embed.setDescription(`Sorted by **Pts**, then **Wins**, then **Games Played**.`);
 
-      const lines = formatLeagueTableLines(tableRows, 50);
-      const chunks = chunkByLines(lines, 1024);
+      // Keep it mobile-readable by paging blocks
+      const MAX_ROWS_PER_BLOCK = 25;
+      const blocks = [];
+      for (let i = 0; i < tableRows.length; i += MAX_ROWS_PER_BLOCK) {
+        const slice = tableRows.slice(i, i + MAX_ROWS_PER_BLOCK);
+        blocks.push(renderStandingsBlock(slice));
+      }
 
-      chunks.forEach((chunk, idx) => {
+      // Add as fields so it scrolls nicely
+      blocks.slice(0, 4).forEach((block, idx) => {
         embed.addFields({
-          name: idx === 0 ? "Standings" : "Standings (cont.)",
-          value: chunk,
+          name: blocks.length > 1 ? `Standings (Page ${idx + 1}/${blocks.length})` : "Standings",
+          value: block,
         });
       });
+
+      if (blocks.length > 4) {
+        embed.addFields({
+          name: "Standings (truncated)",
+          value: `Too many players to show in one embed.`,
+        });
+      }
 
       leagueCachedFooter(embed);
       return interaction.editReply({ embeds: [embed] });
