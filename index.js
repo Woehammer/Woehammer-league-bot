@@ -198,16 +198,16 @@ function renderStandingsBlock(rows) {
   const NAME_W = 22;
 
   const header =
-    `${padR("#", 3)} ${padR("Player", NAME_W)} ${padL("P", 2)} ${padL("W", 2)} ${padL("D", 2)} ${padL("L", 2)} ${padL("Pts", 3)}`;
+    `${padR("Player", NAME_W)} ${padL("P", 2)} ${padL("W", 2)} ${padL("D", 2)} ${padL("L", 2)} ${padL("Pts", 3)}`;
   const rule = "-".repeat(header.length);
 
-  const lines = rows.map((r, i) => {
-    const rank = `${i + 1}.`;
+  const lines = rows.map((r) => {
     const name = clampName(r.player, NAME_W);
-    return `${padR(rank, 3)} ${padR(name, NAME_W)} ${padL(r.played, 2)} ${padL(r.w, 2)} ${padL(r.d, 2)} ${padL(r.l, 2)} ${padL(r.pts, 3)}`;
+    return `${padR(name, NAME_W)} ${padL(r.played, 2)} ${padL(r.w, 2)} ${padL(r.d, 2)} ${padL(r.l, 2)} ${padL(r.pts, 3)}`;
   });
 
   return ["```", header, rule, ...lines, "```"].join("\n");
+}
 }
 
 // -------------------- LEAGUE CACHE + FETCH --------------------
