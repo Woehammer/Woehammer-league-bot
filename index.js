@@ -1,11 +1,5 @@
 // index.js
 // Discord.js v14 single-file bot (ESM) — LEAGUE ONLY
-//
-// Env vars required:
-//   DISCORD_TOKEN
-//   LEAGUE_PLAYERS_CSV_URL
-//   LEAGUE_RESULTS_CSV_URL
-//   LEAGUE_HISTORY_CSV_URL
 
 import http from "http";
 import {
@@ -397,7 +391,9 @@ function findGameResult(player, opponent, battleplan) {
       (sameName(player, p1) && sameName(opponent, p2)) ||
       (sameName(player, p2) && sameName(opponent, p1));
 
-    return playersMatch && norm(bp) === norm(battleplan);
+    const battleplanMatch = norm(bp) === norm(battleplan);
+
+    return playersMatch && battleplanMatch;
   });
 }
 
@@ -405,29 +401,40 @@ function formatFixtureLine(player, opponent, battleplan, idx) {
   const oppTxt = String(opponent ?? "").trim() || "—";
 
   if (norm(oppTxt) === "bye") {
-    return `Round ${idx + 1}: BYE — ${battleplan}`;
+    return `Round ${idx + 1}: BYE - ${battleplan}`;
   }
 
   const result = findGameResult(player, oppTxt, battleplan);
 
   if (!result) {
-    return `Round ${idx + 1}: ${oppTxt} — ${battleplan}`;
+    return `Round ${idx + 1}: ${oppTxt} - ${battleplan}`;
   }
 
   const p1 = getCol(result, ["Player 1", "P1"]);
-  const p1vps = getCol(result, ["P1 VPs", "P1 VP", "Player 1 VPs"]);
-  const p2vps = getCol(result, ["P2 VPs", "P2 VP", "Player 2 VPs"]);
-  const status = getCol(result, ["Status", "status"]) || "Unplayed";
+  const p1vpsRaw = getCol(result, ["P1 VPs", "P1 VP", "Player 1 VPs"]);
+  const p2vpsRaw = getCol(result, ["P2 VPs", "P2 VP", "Player 2 VPs"]);
 
-  const hasScore = String(p1vps).trim() !== "" && String(p2vps).trim() !== "";
+  const hasScore =
+    String(p1vpsRaw).trim() !== "" &&
+    String(p2vpsRaw).trim() !== "";
 
   if (!hasScore) {
-    return `Round ${idx + 1}: ${oppTxt} — ${battleplan} — ${status}`;
+    return `Round ${idx + 1}: ${oppTxt} - ${battleplan}`;
   }
 
-  const score = sameName(player, p1) ? `${p1vps}-${p2vps}` : `${p2vps}-${p1vps}`;
+  const p1vps = Number(p1vpsRaw);
+  const p2vps = Number(p2vpsRaw);
 
-  return `Round ${idx + 1}: ${oppTxt} — ${battleplan} — **${score}**`;
+  const playerIsP1 = sameName(player, p1);
+
+  const playerScore = playerIsP1 ? p1vps : p2vps;
+  const oppScore = playerIsP1 ? p2vps : p1vps;
+
+  let tag = "D";
+  if (playerScore > oppScore) tag = "W";
+  if (playerScore < oppScore) tag = "L";
+
+  return `Round ${idx + 1}: ${oppTxt} (${tag}) ${playerScore}-${oppScore}`;
 }
 
 // ==================================================
@@ -491,7 +498,10 @@ function previousSeasonLines(player) {
 function formatHistoryDetails(historyRows) {
   return historyRows
     .map((r) => {
-      return [`S${r.season}: ${r.league} - ${r.position}`, `W${r.w} D${r.d} L${r.l} Points: ${r.vps}`].join("\n");
+      return [
+        `S${r.season}: ${r.league} - ${r.position}`,
+        `W${r.w} D${r.d} L${r.l} Points: ${r.vps}`,
+      ].join("\n");
     })
     .join("\n---\n");
 }
@@ -666,9 +676,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
   try {
     const cmd = interaction.commandName;
 
-    // ----------------------------------------------
-    // /refresh
-    // ----------------------------------------------
     if (cmd === "refresh") {
       if (!isAdmin(interaction)) {
         const embed = makeBaseEmbed("Admin Only").setDescription(
@@ -711,9 +718,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    // ----------------------------------------------
-    // /league
-    // ----------------------------------------------
     if (cmd === "league") {
       await ensureAllLeagueData();
 
@@ -803,9 +807,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    // ----------------------------------------------
-    // /history
-    // ----------------------------------------------
     if (cmd === "history") {
       await ensureLeaguePlayers();
       await ensureLeagueHistory();
@@ -845,9 +846,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    // ----------------------------------------------
-    // /table
-    // ----------------------------------------------
     if (cmd === "table") {
       await ensureLeaguePlayers();
 
@@ -904,7 +902,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    const embed = makeBaseEmbed("Unknown Command").setDescription("Try `/league`, `/history`, or `/table`.");
+    const embed = makeBaseEmbed("Unknown Command").setDescription(
+      "Try `/league`, `/history`, or `/table`."
+    );
+
     leagueCachedFooter(embed);
     return interaction.editReply({ embeds: [embed] });
   } catch (err) {
