@@ -40,14 +40,14 @@ http
 // CONSTANTS
 // ==================================================
 const LEAGUE_BATTLEPLANS = [
-  "Paths of the Fey",
+  "Noxious Nexus",
+  "Bountiful Equinox",
+  "Grasp of Thorns",
   "The Liferoots",
-  "Surge of Slaughter",
-  "Lifecycle",
-  "Roiling Roots",
+  "Linked Ley Lines",
 ];
 
-const LEAGUE_DEADLINE = new Date("2026-04-08T23:59:59+01:00");
+const LEAGUE_DEADLINE = new Date("2026-06-26T23:59:59+01:00");
 
 // ==================================================
 // CSV PARSER
