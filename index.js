@@ -378,22 +378,20 @@ function getLeagues() {
 
 // ==================================================
 // RESULTS MATCHING
+// This intentionally matches by player/opponent only.
+// Battleplan is displayed for unplayed games, but not required for result lookup.
 // ==================================================
-function findGameResult(player, opponent, battleplan) {
+function findGameResult(player, opponent) {
   if (!opponent || norm(opponent) === "bye") return null;
 
   return leagueResultsCache.find((r) => {
     const p1 = getCol(r, ["Player 1", "P1", "player 1"]);
     const p2 = getCol(r, ["Player 2", "P2", "player 2"]);
-    const bp = getCol(r, ["Battleplan", "battleplan"]);
 
-    const playersMatch =
+    return (
       (sameName(player, p1) && sameName(opponent, p2)) ||
-      (sameName(player, p2) && sameName(opponent, p1));
-
-    const battleplanMatch = norm(bp) === norm(battleplan);
-
-    return playersMatch && battleplanMatch;
+      (sameName(player, p2) && sameName(opponent, p1))
+    );
   });
 }
 
@@ -404,13 +402,13 @@ function formatFixtureLine(player, opponent, battleplan, idx) {
     return `Round ${idx + 1}: BYE - ${battleplan}`;
   }
 
-  const result = findGameResult(player, oppTxt, battleplan);
+  const result = findGameResult(player, oppTxt);
 
   if (!result) {
     return `Round ${idx + 1}: ${oppTxt} - ${battleplan}`;
   }
 
-  const p1 = getCol(result, ["Player 1", "P1"]);
+  const p1 = getCol(result, ["Player 1", "P1", "player 1"]);
   const p1vpsRaw = getCol(result, ["P1 VPs", "P1 VP", "Player 1 VPs"]);
   const p2vpsRaw = getCol(result, ["P2 VPs", "P2 VP", "Player 2 VPs"]);
 
