@@ -46,14 +46,14 @@ http
 // CONSTANTS
 // ==================================================
 const LEAGUE_BATTLEPLANS = [
-  "Noxious Nexus",
-  "Bountiful Equinox",
-  "Grasp of Thorns",
+  "Paths of the Fey",
   "The Liferoots",
-  "Linked Ley Lines",
+  "Surge of Slaughter",
+  "Lifecycle",
+  "Roiling Roots",
 ];
 
-const LEAGUE_DEADLINE = new Date("2026-06-28T23:59:59+01:00");
+const LEAGUE_DEADLINE = new Date("2026-04-08T23:59:59+01:00");
 
 // ==================================================
 // CSV PARSER
@@ -431,30 +431,84 @@ function formatFixtureLine(player, opponent, battleplan, idx) {
 }
 
 // ==================================================
-// HISTORY
+// HISTORY HELPERS
 // ==================================================
-function previousSeasonLines(player) {
-  const rows = leagueHistoryCache.filter((r) =>
-    sameName(getCol(r, ["Player", "player"]), player)
-  );
+function parseResult(result) {
+  const parts = String(result ?? "")
+    .split("-")
+    .map((x) => Number(x.trim()));
 
-  if (!rows.length) return [];
+  return {
+    w: Number.isFinite(parts[0]) ? parts[0] : 0,
+    d: Number.isFinite(parts[1]) ? parts[1] : 0,
+    l: Number.isFinite(parts[2]) ? parts[2] : 0,
+  };
+}
 
-  return rows
+function positionNumber(position) {
+  const n = Number(String(position ?? "").replace(/\D/g, ""));
+  return Number.isFinite(n) && n > 0 ? n : 9999;
+}
+
+function buildPlayerHistory(player) {
+  const rows = leagueHistoryCache
+    .filter((r) => sameName(getCol(r, ["Player", "player"]), player))
     .sort((a, b) => {
       const sa = toNum(getCol(a, ["Season", "season"])) || 0;
       const sb = toNum(getCol(b, ["Season", "season"])) || 0;
+      return sa - sb;
+    });
+
+  return rows.map((r) => {
+    const season = getCol(r, ["Season", "season"]);
+    const league = getCol(r, ["League", "league"]);
+    const position = getCol(r, ["Position", "position"]);
+    const result = getCol(r, ["Result", "result"]);
+    const vps = getCol(r, ["VPs", "VP", "vps"]);
+    const parsed = parseResult(result);
+
+    return {
+      season,
+      league,
+      position,
+      result,
+      vps: Math.round(toNum(vps) || 0),
+      ...parsed,
+    };
+  });
+}
+
+function previousSeasonLines(player) {
+  return buildPlayerHistory(player)
+    .sort((a, b) => {
+      const sa = toNum(a.season) || 0;
+      const sb = toNum(b.season) || 0;
       return sb - sa;
     })
-    .map((r) => {
-      const season = getCol(r, ["Season", "season"]);
-      const league = getCol(r, ["League", "league"]);
-      const position = getCol(r, ["Position", "position"]);
-      const result = getCol(r, ["Result", "result"]);
-      const vps = getCol(r, ["VPs", "VP", "vps"]);
+    .map((r) => `S${r.season}: ${r.league} - ${r.position}`);
+}
 
-      return `Season ${season}: **${position}** in ${league} — ${result}, ${vps} VPs`;
-    });
+function formatHistoryDetails(historyRows) {
+  return historyRows
+    .map((r) => {
+      return [`S${r.season}: ${r.league} - ${r.position}`, `W${r.w} D${r.d} L${r.l} Points: ${r.vps}`].join("\n");
+    })
+    .join("\n---\n");
+}
+
+function formatHistoryRecords(historyRows) {
+  const mostWins = Math.max(...historyRows.map((r) => r.w));
+  const highestVPs = Math.max(...historyRows.map((r) => r.vps));
+
+  const bestPosition = [...historyRows].sort(
+    (a, b) => positionNumber(a.position) - positionNumber(b.position)
+  )[0];
+
+  return [
+    `Most wins in a season: **${mostWins}**`,
+    `Highest position: **${bestPosition.league} - ${bestPosition.position}**`,
+    `Highest VP total: **${highestVPs}**`,
+  ].join("\n");
 }
 
 // ==================================================
@@ -505,6 +559,17 @@ client.once(Events.ClientReady, async () => {
     new SlashCommandBuilder()
       .setName("league")
       .setDescription("Show a player's army list, fixtures, results, and history")
+      .addStringOption((o) =>
+        o
+          .setName("name")
+          .setDescription("Player name")
+          .setRequired(true)
+          .setAutocomplete(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("history")
+      .setDescription("Show a player's full league history")
       .addStringOption((o) =>
         o
           .setName("name")
@@ -567,7 +632,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const focused = interaction.options.getFocused(true);
     const typed = String(focused?.value ?? "");
 
-    if (interaction.commandName === "league" && focused.name === "name") {
+    if (
+      (interaction.commandName === "league" || interaction.commandName === "history") &&
+      focused.name === "name"
+    ) {
       return interaction.respond(makeChoices(getLeaguePlayers(), typed));
     }
 
@@ -611,33 +679,33 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return interaction.editReply({ embeds: [embed] });
       }
 
-      const results = [];
+      const refreshResults = [];
 
       try {
         await loadLeaguePlayers(true);
-        results.push("Players: refreshed");
+        refreshResults.push("Players: refreshed");
       } catch (e) {
-        results.push("Players: failed");
+        refreshResults.push("Players: failed");
         console.warn("Players refresh failed:", e?.message ?? e);
       }
 
       try {
         await loadLeagueResults(true);
-        results.push("Results: refreshed");
+        refreshResults.push("Results: refreshed");
       } catch (e) {
-        results.push("Results: failed");
+        refreshResults.push("Results: failed");
         console.warn("Results refresh failed:", e?.message ?? e);
       }
 
       try {
         await loadLeagueHistory(true);
-        results.push("History: refreshed");
+        refreshResults.push("History: refreshed");
       } catch (e) {
-        results.push("History: failed");
+        refreshResults.push("History: failed");
         console.warn("History refresh failed:", e?.message ?? e);
       }
 
-      const embed = makeBaseEmbed("Refresh Results").setDescription(results.join("\n"));
+      const embed = makeBaseEmbed("Refresh Results").setDescription(refreshResults.join("\n"));
 
       leagueCachedFooter(embed);
       return interaction.editReply({ embeds: [embed] });
@@ -674,7 +742,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         embed.setDescription(`League: **${leagueName}**`);
       }
 
-      // Army list
       const listText = String(lpList(row) ?? "").trim();
 
       if (!listText) {
@@ -697,7 +764,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         }
       }
 
-      // Fixtures with live results
       const opps = lpOpponents(row);
 
       const fixtureLines = opps.map((o, i) => {
@@ -710,7 +776,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         value: fixtureLines.length ? fixtureLines.join("\n") : "No fixtures available.",
       });
 
-      // Record
       const w = Math.round(lpW(row) || 0);
       const d = Math.round(lpD(row) || 0);
       const l = Math.round(lpL(row) || 0);
@@ -722,7 +787,6 @@ client.on(Events.InteractionCreate, async (interaction) => {
         inline: true,
       });
 
-      // Previous seasons
       const historyLines = previousSeasonLines(playerName);
 
       embed.addFields({
@@ -730,10 +794,51 @@ client.on(Events.InteractionCreate, async (interaction) => {
         value: historyLines.length ? historyLines.join("\n") : "No previous season record found.",
       });
 
-      // Deadline
       embed.addFields({
         name: "Deadline",
         value: deadlineLines().join("\n"),
+      });
+
+      leagueCachedFooter(embed);
+      return interaction.editReply({ embeds: [embed] });
+    }
+
+    // ----------------------------------------------
+    // /history
+    // ----------------------------------------------
+    if (cmd === "history") {
+      await ensureLeaguePlayers();
+      await ensureLeagueHistory();
+
+      const input = interaction.options.getString("name");
+      const q = norm(input);
+
+      const currentPlayerRow =
+        leaguePlayersCache.find((r) => norm(lpPlayer(r)) === q) ||
+        leaguePlayersCache.find((r) => norm(lpPlayer(r)).includes(q));
+
+      const playerName = currentPlayerRow ? lpPlayer(currentPlayerRow) : input;
+      const historyRows = buildPlayerHistory(playerName);
+
+      if (!historyRows.length) {
+        const embed = makeBaseEmbed(`History — ${playerName}`).setDescription(
+          "No previous season history found."
+        );
+
+        leagueCachedFooter(embed);
+        return interaction.editReply({ embeds: [embed] });
+      }
+
+      const embed = makeBaseEmbed(`History — ${playerName}`);
+
+      embed.addFields({
+        name: "Season History",
+        value: formatHistoryDetails(historyRows).slice(0, 1024),
+      });
+
+      embed.addFields({
+        name: "Records",
+        value: formatHistoryRecords(historyRows),
       });
 
       leagueCachedFooter(embed);
@@ -799,7 +904,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return interaction.editReply({ embeds: [embed] });
     }
 
-    const embed = makeBaseEmbed("Unknown Command").setDescription("Try `/league` or `/table`.");
+    const embed = makeBaseEmbed("Unknown Command").setDescription("Try `/league`, `/history`, or `/table`.");
     leagueCachedFooter(embed);
     return interaction.editReply({ embeds: [embed] });
   } catch (err) {
