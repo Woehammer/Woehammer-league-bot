@@ -40,14 +40,14 @@ http
 // CONSTANTS
 // ==================================================
 const LEAGUE_BATTLEPLANS = [
-  "Noxious Nexus",
-  "Bountiful Equinox",
-  "Grasp of Thorns",
-  "The Liferoots",
-  "Linked Ley Lines",
+  "Escape from the Coast",
+  "Curse of the Gnaw",
+  "Avalanche of Ash",
+  "Warped Ruins",
+  "Treacherous Ground",
 ];
 
-const LEAGUE_DEADLINE = new Date("2026-06-26T23:59:59+01:00");
+const LEAGUE_DEADLINE = new Date("2026-09-25T23:59:59+01:00");
 
 // ==================================================
 // CSV PARSER
